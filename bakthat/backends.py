@@ -7,6 +7,7 @@ import json
 import socket
 import httplib
 
+from gluster import gfapi
 import boto
 from boto.s3.key import Key
 import math
@@ -102,6 +103,7 @@ class S3Backend(BakthatBackend):
         log.info("Upload completion: {0}%".format(percent))
 
     def upload(self, keyname, filename, **kwargs):
+        log.info("starting upload of keyname %s, filename %s" % (keyname, filename))
         k = Key(self.bucket)
         k.key = keyname
         upload_kwargs = {"reduced_redundancy": kwargs.get("s3_reduced_redundancy", False)}
@@ -340,3 +342,68 @@ class SwiftBackend(BakthatBackend):
 
     def delete(self, keyname):
         self.con.delete_object(self.container, keyname)
+
+class GlusterBackend(BakthatBackend):
+    """Backend to handle GlusterFS upload/download."""
+    def __init__(self, conf={}, profile="default"):
+        BakthatBackend.__init__(self, conf, profile)
+        self.vol = self.conf["volume"]
+        self.backup_dir = self.conf["default_backup_dir"]
+        self.read_size = self.conf.get("read_size", -1)
+        self.container_key = "gluster_key"
+        self.gluster_host = self.conf["gluster_host"]
+        log.info("volume is: %s", self.vol)
+
+
+    def startupVolume(self):
+        self.vol = gfapi.Volume(self.gluster_host, self.vol)
+        self.vol.set_logging("/tmp/gfapi.log", 7)
+        self.vol.mount()
+
+    def download(self, keyname):
+        log.info("Download complete %s" % keyname)
+
+    def cb(self, complete, total):
+        percent = int(complete * 100.0 / total)
+        log.info("Upload completion: {0}%".format(percent))
+
+    def upload(self, keyname, filename, **kwargs):
+        self.startupVolume()
+        dst_filename = "%s/%s" % (self.backup_dir, keyname)
+        try:
+            src_file = open(filename, "rb")
+            with self.vol.creat(dst_filename, os.O_WRONLY | os.O_EXCL, 0644) \
+                as dst_file:
+
+                data = src_file.read(self.read_size)
+                while data:
+                    dst_file.write(data)
+                    data = src_file.read(self.read_size)
+            src_file.close()
+        except Exception as e:
+            log.exception(e)
+
+
+    def ls(self):
+        # this function is never called
+        return "fake list"
+
+    def delete(self, keyname):
+        self.startupVolume()
+        path = "%s/%s" % (self.backup_dir, keyname)
+        try:
+            import pdb; pdb.set_trace()
+            if self.vol.exists(path):
+                if self.vol.isdir(path):
+                    self.vol.rmtree(path)
+                else:
+                    # there's an issue with the unlink function
+                    # accepting a unicode variable, needs to be
+                    # investigated in glusterfs
+                    # interestingly, the problem doesn't happen
+                    # with stat (e.g., exists, isdir)
+                    self.vol.unlink(path.encode('ascii', 'ignore'))
+            else:
+                log.warn("%s doesn't exist" % path)
+        except Exception as e:
+            log.exception(e)
