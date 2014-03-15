@@ -22,7 +22,7 @@ import aaargh
 import grandfatherson
 from byteformat import ByteFormatter
 
-from bakthat.backends import GlacierBackend, S3Backend, RotationConfig, SwiftBackend
+from bakthat.backends import GlacierBackend, S3Backend, RotationConfig, SwiftBackend, GlusterBackend
 from bakthat.conf import config, events, load_config, DEFAULT_DESTINATION, DEFAULT_LOCATION, CONFIG_FILE, EXCLUDE_FILES
 from bakthat.utils import _interval_string_to_seconds
 from bakthat.models import Backups
@@ -44,7 +44,7 @@ class BakthatFilter(logging.Filter):
             return rec.levelno >= logging.WARNING
 
 
-STORAGE_BACKEND = dict(s3=S3Backend, glacier=GlacierBackend, swift=SwiftBackend)
+STORAGE_BACKEND = dict(s3=S3Backend, glacier=GlacierBackend, swift=SwiftBackend, gluster=GlusterBackend)
 
 
 def _get_store_backend(conf, destination=None, profile="default"):
@@ -262,8 +262,12 @@ def backup(filename=os.getcwd(), destination=None, profile="default", config=CON
     if exclude_file and os.path.isfile(exclude_file):
         EXCLUDE_FILES.insert(0, exclude_file)
 
+    isdir = os.path.isdir(filename)
+
+    #TODO: I think this is not doing a deep search
+    #first directory only
     _exclude = lambda filename: False
-    if os.path.isdir(filename):
+    if isdir:
         join = functools.partial(os.path.join, filename)
         for efile in EXCLUDE_FILES:
             efile = join(efile)
@@ -296,6 +300,10 @@ def backup(filename=os.getcwd(), destination=None, profile="default", config=CON
                 return
 
     if not compress:
+        if isdir:
+            log.error("Unable to backup uncompressed directory. " \
+                    "Set compress option to true")
+            return
         log.info("Compression disabled")
         outname = filename
         with open(outname) as outfile:
@@ -591,6 +599,7 @@ def delete(filename, destination=None, profile="default", config=CONFIG_FILE, **
         log.error("No file to delete, use -f to specify one.")
         return
 
+    storage_backend, destination, conf = _get_store_backend(config, destination, profile)
     backup = Backups.match_filename(filename, destination, profile=profile, config=config)
 
     if not backup:
@@ -599,7 +608,6 @@ def delete(filename, destination=None, profile="default", config=CONFIG_FILE, **
 
     key_name = backup.stored_filename
 
-    storage_backend, destination, conf = _get_store_backend(config, destination, profile)
 
     session_id = str(uuid.uuid4())
     events.before_delete(session_id)

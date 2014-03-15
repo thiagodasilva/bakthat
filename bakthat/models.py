@@ -71,17 +71,24 @@ class Backups(SyncedModel):
 
         profile = conf.get(kwargs.get("profile", "default"))
 
-        s3_key = hashlib.sha512(profile.get("access_key") +
-                                profile.get("s3_bucket")).hexdigest()
-        glacier_key = hashlib.sha512(profile.get("access_key") +
-                                     profile.get("glacier_vault")).hexdigest()
+        dest = profile.get("default_destination")
+        if (dest == "gluster"):
+            gluster_key = hashlib.sha512(profile.get("access_key") +
+                                         profile.get("gluster_key")).hexdigest()
+            bh_where = [gluster_key]
+        else:
+            s3_key = hashlib.sha512(profile.get("access_key") +
+                                    profile.get("s3_bucket")).hexdigest()
+            glacier_key = hashlib.sha512(profile.get("access_key") +
+                                         profile.get("glacier_vault")).hexdigest()
+            bh_where = [s3_key, glacier_key]
 
         try:
             fquery = "{0}*".format(filename)
             query = Backups.select().where(Backups.filename % fquery |
                                            Backups.stored_filename % fquery,
                                            Backups.backend == destination,
-                                           Backups.backend_hash << [s3_key, glacier_key])
+                                           Backups.backend_hash << bh_where)
             query = query.order_by(Backups.backup_date.desc())
             return query.get()
         except Backups.DoesNotExist:
@@ -94,7 +101,7 @@ class Backups(SyncedModel):
             conf = load_config(kwargs.get("config"))
 
         if not destination:
-            destination = ["s3", "glacier"]
+            destination = ["s3", "glacier", "gluster"]
         if isinstance(destination, (str, unicode)):
             destination = [destination]
 
@@ -103,13 +110,19 @@ class Backups(SyncedModel):
 
         if kwargs.get("profile"):
             profile = conf.get(kwargs.get("profile"))
+            dest = profile.get("default_destination")
+            if (dest == "gluster"):
+                gluster_key = hashlib.sha512(profile.get("access_key") +
+                                             profile.get("gluster_key")).hexdigest()
+                bh_where = [gluster_key]
+            else:
+                s3_key = hashlib.sha512(profile.get("access_key") +
+                                        profile.get("s3_bucket")).hexdigest()
+                glacier_key = hashlib.sha512(profile.get("access_key") +
+                                             profile.get("glacier_vault")).hexdigest()
+                bh_where = [s3_key, glacier_key]
 
-            s3_key = hashlib.sha512(profile.get("access_key") +
-                                    profile.get("s3_bucket")).hexdigest()
-            glacier_key = hashlib.sha512(profile.get("access_key") +
-                                         profile.get("glacier_vault")).hexdigest()
-
-            wheres.append(Backups.backend_hash << [s3_key, glacier_key])
+            wheres.append(Backups.backend_hash << bh_where)
 
         wheres.append(Backups.filename % query |
                       Backups.stored_filename % query)
